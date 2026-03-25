@@ -326,7 +326,14 @@ class TimelapseWindow(QMainWindow):
             fps = fps_spin.value()
             video_format = fmt_combo.currentText().lower()
             _, ext = VIDEO_FORMATS[video_format]
-            output_path = session_dir / f"timelapse{ext}"
+            base_name = "timelapse"
+            output_path = session_dir / f"{base_name}{ext}"
+            counter = 1
+            # Avoid silently overwriting an existing export by choosing
+            # a unique filename (timelapse, timelapse_1, timelapse_2, ...)
+            while output_path.exists():
+                output_path = session_dir / f"{base_name}_{counter}{ext}"
+                counter += 1
 
             # Disable controls during export
             ok_btn.setEnabled(False)
