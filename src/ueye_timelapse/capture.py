@@ -15,6 +15,7 @@ Supports four stop conditions:
 import csv
 import json
 import logging
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
@@ -52,6 +53,7 @@ class CaptureWorker(QThread):
     image_captured = pyqtSignal(int, str)        # frame_number, filename
     countdown_tick = pyqtSignal(float)            # seconds_remaining
     remaining_updated = pyqtSignal(str)           # remaining display string
+    paused_changed = pyqtSignal(bool)             # is_paused
     error_occurred = pyqtSignal(str)              # error message
     session_started = pyqtSignal(str)             # session directory path
     session_finished = pyqtSignal(int)            # total frames captured
@@ -105,6 +107,11 @@ class CaptureWorker(QThread):
         self._stop_condition = stop_condition
 
         self._stop_requested = False
+        self._paused = False
+        self._pause_event = threading.Event()
+        self._pause_event.set()  # starts unpaused (event is "set" = not blocked)
+        self._total_paused_seconds = 0.0
+        self._pause_start: Optional[datetime] = None
         self._frame_count = 0
         self._session_start: Optional[datetime] = None
         self._session_dir: Optional[Path] = None
@@ -118,6 +125,52 @@ class CaptureWorker(QThread):
     def request_stop(self):
         """Request the capture loop to stop after the current cycle."""
         self._stop_requested = True
+        # Unblock pause so the thread can exit
+        self._pause_event.set()
+
+    def pause(self):
+        """Pause capturing. The worker thread blocks until resumed."""
+        if not self._paused:
+            self._paused = True
+            self._pause_start = datetime.now()
+            self._pause_event.clear()  # block the thread
+            self.paused_changed.emit(True)
+            logger.info("Capture paused")
+
+    def resume(self):
+        """Resume capturing after a pause."""
+        if self._paused:
+            if self._pause_start is not None:
+                paused_duration = (datetime.now() - self._pause_start).total_seconds()
+                self._total_paused_seconds += paused_duration
+                self._pause_start = None
+            self._paused = False
+            self._pause_event.set()  # unblock the thread
+            self.paused_changed.emit(False)
+            logger.info(
+                f"Capture resumed (total paused: "
+                f"{self._total_paused_seconds:.1f}s)"
+            )
+
+    def toggle_pause(self):
+        """Toggle between paused and running."""
+        if self._paused:
+            self.resume()
+        else:
+            self.pause()
+
+    @property
+    def is_paused(self) -> bool:
+        """Whether the worker is currently paused."""
+        return self._paused
+
+    @property
+    def total_paused_seconds(self) -> float:
+        """Total time spent paused (including current pause if active)."""
+        total = self._total_paused_seconds
+        if self._paused and self._pause_start is not None:
+            total += (datetime.now() - self._pause_start).total_seconds()
+        return total
 
     @property
     def frame_count(self) -> int:
@@ -161,6 +214,11 @@ class CaptureWorker(QThread):
         # Capture loop
         try:
             while not self._stop_requested:
+                # Block here if paused (will unblock on resume or stop)
+                self._pause_event.wait()
+                if self._stop_requested:
+                    break
+
                 # Check stop condition BEFORE capturing
                 if self._should_stop():
                     break
@@ -339,13 +397,18 @@ class CaptureWorker(QThread):
     def _wait_with_countdown(self):
         """Wait for the capture interval, emitting countdown ticks.
 
-        Checks for stop requests every 0.25 seconds so the thread
+        Checks for stop/pause requests every 0.25 seconds so the thread
         remains responsive.
         """
         remaining = self._interval_seconds
         tick_interval = 0.25  # seconds between countdown updates
 
         while remaining > 0 and not self._stop_requested:
+            # Block if paused
+            self._pause_event.wait()
+            if self._stop_requested:
+                break
+
             self.countdown_tick.emit(remaining)
             sleep_time = min(tick_interval, remaining)
             time.sleep(sleep_time)

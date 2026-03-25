@@ -352,15 +352,44 @@ class TimelapseWindow(QMainWindow):
         self._stop_params_stack.addWidget(frames_widget)
 
         row2.addWidget(self._stop_params_stack, stretch=1)
+
+        # Estimated duration label (updates live as settings change)
+        self._estimate_label = QLabel("")
+        self._estimate_label.setStyleSheet("color: #666; font-style: italic;")
+        row2.addWidget(self._estimate_label)
+
         outer.addLayout(row2)
 
-        # Row 3: start, stop, capture-now
+        # Connect signals to update the estimate whenever settings change
+        self._stop_mode_combo.currentIndexChanged.connect(
+            self._update_duration_estimate
+        )
+        self._duration_spin.valueChanged.connect(self._update_duration_estimate)
+        self._duration_unit.currentIndexChanged.connect(
+            self._update_duration_estimate
+        )
+        self._clock_time_edit.timeChanged.connect(self._update_duration_estimate)
+        self._frame_count_spin.valueChanged.connect(
+            self._update_duration_estimate
+        )
+        self._interval_spin.valueChanged.connect(self._update_duration_estimate)
+        self._interval_unit.currentIndexChanged.connect(
+            self._update_duration_estimate
+        )
+
+        # Row 3: start, pause, stop, capture-now
         row3 = QHBoxLayout()
 
         self._start_btn = QPushButton("▶  Start Timelapse")
         self._start_btn.setFixedWidth(150)
         self._start_btn.clicked.connect(self._on_start_clicked)
         row3.addWidget(self._start_btn)
+
+        self._pause_btn = QPushButton("⏸  Pause")
+        self._pause_btn.setFixedWidth(100)
+        self._pause_btn.setEnabled(False)
+        self._pause_btn.clicked.connect(self._on_pause_clicked)
+        row3.addWidget(self._pause_btn)
 
         self._stop_btn = QPushButton("■  Stop")
         self._stop_btn.setFixedWidth(90)
@@ -383,6 +412,67 @@ class TimelapseWindow(QMainWindow):
     def _on_stop_mode_changed(self, index: int):
         """Switch the visible stop-condition parameter widget."""
         self._stop_params_stack.setCurrentIndex(index)
+        self._update_duration_estimate()
+
+    def _update_duration_estimate(self):
+        """Update the estimated duration label based on current settings."""
+        mode_index = self._stop_mode_combo.currentIndex()
+
+        if mode_index == 0:  # Manual
+            self._estimate_label.setText("")
+            return
+
+        elif mode_index == 1:  # Duration
+            value = self._duration_spin.value()
+            unit = self._duration_unit.currentText()
+            if unit == "hours":
+                total_seconds = value * 3600
+            else:
+                total_seconds = value * 60
+
+        elif mode_index == 2:  # Clock time
+            qt_time = self._clock_time_edit.time()
+            now = datetime.now()
+            stop_at = now.replace(
+                hour=qt_time.hour(),
+                minute=qt_time.minute(),
+                second=0,
+                microsecond=0,
+            )
+            if stop_at <= now:
+                stop_at += timedelta(days=1)
+            total_seconds = (stop_at - now).total_seconds()
+
+        elif mode_index == 3:  # Frame count
+            max_frames = self._frame_count_spin.value()
+            interval = self._get_interval_seconds()
+            total_seconds = max_frames * interval
+
+        else:
+            self._estimate_label.setText("")
+            return
+
+        # Format the estimate
+        self._estimate_label.setText(f"≈ {self._format_duration(total_seconds)}")
+
+    @staticmethod
+    def _format_duration(seconds: float) -> str:
+        """Format seconds into a human-readable duration string."""
+        total = int(seconds)
+        if total < 60:
+            return f"{total}s"
+        elif total < 3600:
+            m, s = divmod(total, 60)
+            return f"{m}m {s:02d}s"
+        else:
+            h, remainder = divmod(total, 3600)
+            m, _ = divmod(remainder, 60)
+            return f"{h}h {m:02d}m"
+
+    def _on_pause_clicked(self):
+        """Toggle pause/resume on the capture worker."""
+        if self._capture_worker is not None:
+            self._capture_worker.toggle_pause()
 
     def _build_status_row(self) -> QGroupBox:
         """Build the session status display."""
@@ -483,6 +573,7 @@ class TimelapseWindow(QMainWindow):
 
         # Capture controls
         self._start_btn.setEnabled(connected and not capturing)
+        self._pause_btn.setEnabled(capturing)
         self._stop_btn.setEnabled(capturing)
         self._capture_now_btn.setEnabled(connected and not capturing)
         self._interval_spin.setEnabled(not capturing)
@@ -494,6 +585,10 @@ class TimelapseWindow(QMainWindow):
         self._duration_unit.setEnabled(not capturing)
         self._clock_time_edit.setEnabled(not capturing)
         self._frame_count_spin.setEnabled(not capturing)
+
+        # Reset pause button text when not capturing
+        if not capturing:
+            self._pause_btn.setText("⏸  Pause")
 
     # =========================================================================
     # Connection
@@ -649,6 +744,7 @@ class TimelapseWindow(QMainWindow):
         self._capture_worker.image_captured.connect(self._on_image_captured)
         self._capture_worker.countdown_tick.connect(self._on_countdown_tick)
         self._capture_worker.remaining_updated.connect(self._on_remaining_updated)
+        self._capture_worker.paused_changed.connect(self._on_paused_changed)
         self._capture_worker.error_occurred.connect(self._on_capture_error)
         self._capture_worker.session_started.connect(self._on_session_started)
         self._capture_worker.session_finished.connect(self._on_session_finished)
@@ -656,6 +752,7 @@ class TimelapseWindow(QMainWindow):
         # Start
         self._is_capturing = True
         self._session_start_time = datetime.now()
+        self._estimate_label.setText("")  # hide estimate while running
         self._elapsed_timer.start(1000)
         self._capture_worker.start()
         self._update_ui_state()
@@ -779,6 +876,17 @@ class TimelapseWindow(QMainWindow):
         """Update the remaining time/frames display."""
         self._remaining_label.setText(remaining_text)
 
+    @pyqtSlot(bool)
+    def _on_paused_changed(self, is_paused: bool):
+        """Handle pause state change from the worker."""
+        if is_paused:
+            self._pause_btn.setText("▶  Resume")
+            self._countdown_label.setText("paused")
+            self._statusbar.showMessage("Timelapse paused", 5000)
+        else:
+            self._pause_btn.setText("⏸  Pause")
+            self._statusbar.showMessage("Timelapse resumed", 3000)
+
     @pyqtSlot(str)
     def _on_capture_error(self, error_msg: str):
         """Handle an error from the capture worker."""
@@ -828,15 +936,26 @@ class TimelapseWindow(QMainWindow):
 
     @pyqtSlot()
     def _update_elapsed_time(self):
-        """Update the elapsed time display (called every second)."""
+        """Update the elapsed time display (called every second).
+
+        Shows wall-clock elapsed time, plus paused time if any.
+        """
         if self._session_start_time is None:
             return
+
         elapsed = datetime.now() - self._session_start_time
-        # Format as HH:MM:SS
         total_secs = int(elapsed.total_seconds())
         hours, remainder = divmod(total_secs, 3600)
         minutes, seconds = divmod(remainder, 60)
-        self._elapsed_label.setText(f"{hours:02d}:{minutes:02d}:{seconds:02d}")
+        elapsed_str = f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+
+        # Show paused time if the worker has accumulated any
+        if self._capture_worker is not None:
+            paused = self._capture_worker.total_paused_seconds
+            if paused >= 1.0:
+                elapsed_str += f"  (paused: {self._format_duration(paused)})"
+
+        self._elapsed_label.setText(elapsed_str)
 
     # =========================================================================
     # Window Close
