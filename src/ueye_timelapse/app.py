@@ -216,7 +216,10 @@ class TimelapseWindow(QMainWindow):
                 self,
                 "OpenCV Not Available",
                 "Video export requires OpenCV.\n\n"
-                "Install it with:\n  pip install opencv-python",
+                "Install it with:\n"
+                '  uv pip install "ueye-timelapse[video]"\n\n'
+                "Or:\n"
+                "  pip install opencv-python",
             )
             return
 
@@ -237,12 +240,16 @@ class TimelapseWindow(QMainWindow):
 
     def _show_video_export_dialog(self, session_dir: Path):
         """Show the video export configuration dialog."""
+        # Determine the actual search directory for the error message
+        images_dir = session_dir / "images"
+        search_dir = images_dir if images_dir.is_dir() else session_dir
+
         images = find_session_images(session_dir)
         if not images:
             QMessageBox.warning(
                 self,
                 "No Images Found",
-                f"No image files found in:\n{session_dir / 'images'}",
+                f"No image files found in:\n{search_dir}",
             )
             return
 
@@ -307,7 +314,15 @@ class TimelapseWindow(QMainWindow):
 
         button_box.rejected.connect(dialog.reject)
 
+        # Track whether export has completed to gate the accepted signal
+        export_done = [False]
+
         def do_export():
+            if export_done[0]:
+                # Already exported — just close the dialog
+                dialog.accept()
+                return
+
             fps = fps_spin.value()
             video_format = fmt_combo.currentText().lower()
             _, ext = VIDEO_FORMATS[video_format]
@@ -322,12 +337,15 @@ class TimelapseWindow(QMainWindow):
             progress.setValue(0)
             status_label.setText("Exporting...")
 
-            # Force UI update before the blocking export
+            # NOTE: The export runs synchronously with processEvents() calls
+            # to keep the progress bar updating. This is adequate for typical
+            # session sizes (hundreds to low thousands of frames). For very
+            # large sessions, consider moving to a QThread worker to avoid
+            # re-entrancy risks from processEvents().
             QApplication.processEvents()
 
             def on_progress(current, total):
                 progress.setValue(current)
-                # Keep UI responsive during long exports
                 QApplication.processEvents()
 
             try:
@@ -341,8 +359,7 @@ class TimelapseWindow(QMainWindow):
                 status_label.setText(f"Saved: {result.name}")
                 ok_btn.setText("Done")
                 ok_btn.setEnabled(True)
-                ok_btn.clicked.disconnect()
-                ok_btn.clicked.connect(dialog.accept)
+                export_done[0] = True
                 QMessageBox.information(
                     dialog,
                     "Export Complete",

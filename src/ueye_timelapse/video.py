@@ -48,8 +48,8 @@ DEFAULT_FPS = 24.0
 def find_session_images(session_dir: str | Path) -> List[Path]:
     """Find all timelapse frame images in a session directory.
 
-    Looks in the ``images/`` subdirectory for files matching the
-    ``frame_NNNNNN.*`` naming pattern used by the capture worker.
+    Looks in the ``images/`` subdirectory for image files with common
+    extensions (``.png``, ``.tiff``, ``.tif``, ``.jpg``, ``.jpeg``, ``.bmp``).
     Falls back to the session root if no ``images/`` subfolder exists.
 
     Args:
@@ -162,8 +162,11 @@ def create_video(
     # Find images
     images = find_session_images(session_dir)
     if not images:
+        # Report the actual directory that was searched
+        images_dir = session_dir / "images"
+        search_dir = images_dir if images_dir.is_dir() else session_dir
         raise FileNotFoundError(
-            f"No image files found in {session_dir / 'images'}"
+            f"No image files found in {search_dir}"
         )
 
     # Resolve FPS
@@ -182,9 +185,6 @@ def create_video(
         raise RuntimeError(f"Failed to read first image: {images[0]}")
 
     height, width = first_frame.shape[:2]
-
-    # Determine if grayscale (need to convert for video writer)
-    is_grayscale = first_frame.ndim == 2
 
     logger.info(
         f"Creating video: {len(images)} frames, {width}x{height}, "
@@ -211,9 +211,25 @@ def create_video(
                 logger.warning(f"Skipping unreadable image: {image_path}")
                 continue
 
-            # Video writer requires BGR color frames
+            # Normalize frame format for VideoWriter: 3-channel BGR, fixed size.
+            # Grayscale -> BGR
             if frame.ndim == 2:
                 frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
+            # BGRA (4-channel, e.g. PNG/TIFF with alpha) -> BGR
+            elif frame.ndim == 3 and frame.shape[2] == 4:
+                frame = cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
+
+            # Ensure frame size matches the video size expected by the writer.
+            if frame.shape[1] != width or frame.shape[0] != height:
+                logger.warning(
+                    "Resizing frame from %sx%s to %sx%s for video output: %s",
+                    frame.shape[1],
+                    frame.shape[0],
+                    width,
+                    height,
+                    image_path,
+                )
+                frame = cv2.resize(frame, (width, height))
 
             writer.write(frame)
 
