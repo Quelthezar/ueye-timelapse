@@ -16,7 +16,7 @@ Requires opencv-python:
 import json
 import logging
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import List, Optional
 
 logger = logging.getLogger(__name__)
 
