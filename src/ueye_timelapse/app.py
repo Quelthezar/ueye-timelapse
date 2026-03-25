@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Optional
 
 import numpy as np
-from PyQt5.QtCore import Qt, QTime, QTimer, QUrl, pyqtSlot
+from PyQt5.QtCore import QSize, Qt, QTime, QTimer, QUrl, pyqtSlot
 from PyQt5.QtGui import QDesktopServices, QImage, QPixmap
 from PyQt5.QtWidgets import (
     QAction,
@@ -361,9 +361,9 @@ class TimelapseWindow(QMainWindow):
         outer.addLayout(row2)
 
         # Connect signals to update the estimate whenever settings change
-        self._stop_mode_combo.currentIndexChanged.connect(
-            self._update_duration_estimate
-        )
+        # (Note: _stop_mode_combo is already connected to _on_stop_mode_changed
+        # above, which calls _update_duration_estimate, so no need to connect
+        # it again here.)
         self._duration_spin.valueChanged.connect(self._update_duration_estimate)
         self._duration_unit.currentIndexChanged.connect(
             self._update_duration_estimate
@@ -446,7 +446,9 @@ class TimelapseWindow(QMainWindow):
         elif mode_index == 3:  # Frame count
             max_frames = self._frame_count_spin.value()
             interval = self._get_interval_seconds()
-            total_seconds = max_frames * interval
+            # First frame is captured immediately; only (max_frames - 1)
+            # waits occur between captures.
+            total_seconds = (max_frames - 1) * interval if max_frames > 1 else 0
 
         else:
             self._estimate_label.setText("")
@@ -662,7 +664,11 @@ class TimelapseWindow(QMainWindow):
         self._display_frame(frame)
 
     def _display_frame(self, frame: np.ndarray):
-        """Convert a numpy frame to QPixmap and display it, scaled to fit."""
+        """Convert a numpy frame to QPixmap and display it, scaled to fit.
+
+        Accounts for high-DPI displays by using the label's device pixel
+        ratio so the image renders at full sharpness on Retina/HiDPI screens.
+        """
         h, w = frame.shape[:2]
 
         # Grayscale -> QImage
@@ -679,11 +685,20 @@ class TimelapseWindow(QMainWindow):
 
         pixmap = QPixmap.fromImage(qimg)
 
-        # Scale to fit the label while preserving aspect ratio
+        # Scale to fit the label while preserving aspect ratio.
+        # On high-DPI screens, the label's logical size differs from its
+        # physical pixel size. We scale to the physical size for sharpness,
+        # then set the device pixel ratio so Qt knows the true dimensions.
+        dpr = self._preview_label.devicePixelRatioF()
         label_size = self._preview_label.size()
-        scaled = pixmap.scaled(
-            label_size, Qt.KeepAspectRatio, Qt.SmoothTransformation
+        physical_size = QSize(
+            int(label_size.width() * dpr),
+            int(label_size.height() * dpr),
         )
+        scaled = pixmap.scaled(
+            physical_size, Qt.KeepAspectRatio, Qt.SmoothTransformation
+        )
+        scaled.setDevicePixelRatio(dpr)
         self._preview_label.setPixmap(scaled)
 
     # =========================================================================
