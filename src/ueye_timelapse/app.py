@@ -20,6 +20,8 @@ from PyQt5.QtWidgets import (
     QAction,
     QApplication,
     QComboBox,
+    QDialog,
+    QDialogButtonBox,
     QDoubleSpinBox,
     QFileDialog,
     QGroupBox,
@@ -29,6 +31,7 @@ from PyQt5.QtWidgets import (
     QMainWindow,
     QMenuBar,
     QMessageBox,
+    QProgressBar,
     QPushButton,
     QSizePolicy,
     QSpinBox,
@@ -51,6 +54,14 @@ from ueye_timelapse.capture import (
     STOP_DURATION,
     STOP_CLOCK_TIME,
     STOP_FRAME_COUNT,
+)
+from ueye_timelapse.video import (
+    OPENCV_AVAILABLE as VIDEO_AVAILABLE,
+    create_video,
+    find_session_images,
+    suggest_fps,
+    DEFAULT_FPS,
+    VIDEO_FORMATS,
 )
 
 logger = logging.getLogger(__name__)
@@ -150,6 +161,12 @@ class TimelapseWindow(QMainWindow):
 
         file_menu.addSeparator()
 
+        self._export_video_action = QAction("Export Video...", self)
+        self._export_video_action.triggered.connect(self._on_export_video)
+        file_menu.addAction(self._export_video_action)
+
+        file_menu.addSeparator()
+
         quit_action = QAction("&Quit", self)
         quit_action.setShortcut("Ctrl+Q")
         quit_action.triggered.connect(self.close)
@@ -191,6 +208,182 @@ class TimelapseWindow(QMainWindow):
                         self, "Error",
                         f"Could not create directory:\n{e}",
                     )
+
+    def _on_export_video(self):
+        """Open a dialog to export a timelapse session as a video."""
+        if not VIDEO_AVAILABLE:
+            QMessageBox.warning(
+                self,
+                "OpenCV Not Available",
+                "Video export requires OpenCV.\n\n"
+                "Install it with:\n"
+                '  uv pip install "ueye-timelapse[video]"\n\n'
+                "Or:\n"
+                "  pip install opencv-python",
+            )
+            return
+
+        # Pick session directory — default to current/last session
+        default_dir = ""
+        if self._current_session_dir and self._current_session_dir.exists():
+            default_dir = str(self._current_session_dir)
+        elif self._output_dir_edit.text():
+            default_dir = self._output_dir_edit.text()
+
+        session_dir = QFileDialog.getExistingDirectory(
+            self, "Select Session Folder", default_dir
+        )
+        if not session_dir:
+            return
+
+        self._show_video_export_dialog(Path(session_dir))
+
+    def _show_video_export_dialog(self, session_dir: Path):
+        """Show the video export configuration dialog."""
+        # Determine the actual search directory for the error message
+        images_dir = session_dir / "images"
+        search_dir = images_dir if images_dir.is_dir() else session_dir
+
+        images = find_session_images(session_dir)
+        if not images:
+            QMessageBox.warning(
+                self,
+                "No Images Found",
+                f"No image files found in:\n{search_dir}",
+            )
+            return
+
+        # Build dialog
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Export Video")
+        dialog.setMinimumWidth(400)
+        layout = QVBoxLayout(dialog)
+
+        # Info
+        info_label = QLabel(
+            f"Session: {session_dir.name}\n"
+            f"Frames: {len(images)}"
+        )
+        layout.addWidget(info_label)
+
+        # FPS
+        fps_row = QHBoxLayout()
+        fps_row.addWidget(QLabel("Playback FPS:"))
+        fps_spin = QDoubleSpinBox()
+        fps_spin.setRange(1.0, 120.0)
+        fps_spin.setDecimals(1)
+        fps_spin.setSingleStep(1.0)
+
+        suggested = suggest_fps(session_dir)
+        fps_spin.setValue(suggested if suggested else DEFAULT_FPS)
+        fps_row.addWidget(fps_spin)
+
+        if suggested:
+            fps_hint = QLabel(f"(suggested: {suggested:.0f})")
+            fps_hint.setStyleSheet("color: #666; font-style: italic;")
+            fps_row.addWidget(fps_hint)
+
+        fps_row.addStretch()
+        layout.addLayout(fps_row)
+
+        # Format
+        fmt_row = QHBoxLayout()
+        fmt_row.addWidget(QLabel("Format:"))
+        fmt_combo = QComboBox()
+        fmt_combo.addItems(["MP4", "AVI"])
+        fmt_row.addWidget(fmt_combo)
+        fmt_row.addStretch()
+        layout.addLayout(fmt_row)
+
+        # Progress bar (hidden initially)
+        progress = QProgressBar()
+        progress.setVisible(False)
+        layout.addWidget(progress)
+
+        # Status label
+        status_label = QLabel("")
+        layout.addWidget(status_label)
+
+        # Buttons
+        button_box = QDialogButtonBox(
+            QDialogButtonBox.Ok | QDialogButtonBox.Cancel
+        )
+        ok_btn = button_box.button(QDialogButtonBox.Ok)
+        ok_btn.setText("Export")
+        layout.addWidget(button_box)
+
+        button_box.rejected.connect(dialog.reject)
+
+        # Track whether export has completed to gate the accepted signal
+        export_done = [False]
+
+        def do_export():
+            if export_done[0]:
+                # Already exported — just close the dialog
+                dialog.accept()
+                return
+
+            fps = fps_spin.value()
+            video_format = fmt_combo.currentText().lower()
+            _, ext = VIDEO_FORMATS[video_format]
+            base_name = "timelapse"
+            output_path = session_dir / f"{base_name}{ext}"
+            counter = 1
+            # Avoid silently overwriting an existing export by choosing
+            # a unique filename (timelapse, timelapse_1, timelapse_2, ...)
+            while output_path.exists():
+                output_path = session_dir / f"{base_name}_{counter}{ext}"
+                counter += 1
+
+            # Disable controls during export
+            ok_btn.setEnabled(False)
+            fps_spin.setEnabled(False)
+            fmt_combo.setEnabled(False)
+            progress.setVisible(True)
+            progress.setRange(0, len(images))
+            progress.setValue(0)
+            status_label.setText("Exporting...")
+
+            # NOTE: The export runs synchronously with processEvents() calls
+            # to keep the progress bar updating. This is adequate for typical
+            # session sizes (hundreds to low thousands of frames). For very
+            # large sessions, consider moving to a QThread worker to avoid
+            # re-entrancy risks from processEvents().
+            QApplication.processEvents()
+
+            def on_progress(current, total):
+                progress.setValue(current)
+                QApplication.processEvents()
+
+            try:
+                result = create_video(
+                    session_dir=session_dir,
+                    output_path=output_path,
+                    fps=fps,
+                    video_format=video_format,
+                    progress_callback=on_progress,
+                )
+                status_label.setText(f"Saved: {result.name}")
+                ok_btn.setText("Done")
+                ok_btn.setEnabled(True)
+                export_done[0] = True
+                QMessageBox.information(
+                    dialog,
+                    "Export Complete",
+                    f"Video saved to:\n{result}",
+                )
+            except Exception as e:
+                status_label.setText(f"Error: {e}")
+                ok_btn.setText("Retry")
+                ok_btn.setEnabled(True)
+                fps_spin.setEnabled(True)
+                fmt_combo.setEnabled(True)
+                QMessageBox.warning(
+                    dialog, "Export Failed", f"Error creating video:\n{e}"
+                )
+
+        button_box.accepted.connect(do_export)
+        dialog.exec_()
 
     def _build_connection_row(self) -> QGroupBox:
         """Build the camera connection controls."""
@@ -928,9 +1121,9 @@ class TimelapseWindow(QMainWindow):
         self._remaining_label.setText("—")
         self._update_ui_state()
 
-        session_dir = ""
+        session_dir = None
         if self._capture_worker is not None and self._capture_worker.session_dir:
-            session_dir = str(self._capture_worker.session_dir)
+            session_dir = self._capture_worker.session_dir
 
         self._capture_worker = None
 
@@ -938,12 +1131,25 @@ class TimelapseWindow(QMainWindow):
             f"Timelapse complete: {total_frames} frames", 10000
         )
 
-        QMessageBox.information(
-            self,
-            "Timelapse Complete",
-            f"Captured {total_frames} frames.\n\n"
-            f"Saved to:\n{session_dir}",
-        )
+        # Offer video export if OpenCV is available and we have frames
+        if VIDEO_AVAILABLE and session_dir and total_frames > 0:
+            reply = QMessageBox.question(
+                self,
+                "Timelapse Complete",
+                f"Captured {total_frames} frames.\n\n"
+                f"Saved to:\n{session_dir}\n\n"
+                f"Would you like to export a video?",
+                QMessageBox.Yes | QMessageBox.No,
+                )
+            if reply == QMessageBox.Yes:
+                self._show_video_export_dialog(session_dir)
+        else:
+            QMessageBox.information(
+                self,
+                "Timelapse Complete",
+                f"Captured {total_frames} frames.\n\n"
+                f"Saved to:\n{session_dir or '(unknown)'}",
+            )
 
     # =========================================================================
     # Elapsed Time
