@@ -25,6 +25,21 @@ long-duration particle monitoring under a microscope.
 
 ## Installation
 
+### Option A: Standalone executable (recommended for end users)
+
+1. Install the [IDS uEye SDK](https://en.ids-imaging.com/ids-software-suite.html)
+   (the camera drivers are required regardless of installation method).
+2. Download the latest `ueye-timelapse-windows.zip` from
+   [GitHub Releases](https://github.com/Quelthezar/ueye-timelapse/releases).
+3. Unzip and double-click `ueye-timelapse.exe`.
+
+No Python installation required. Video export (MP4/AVI) is included.
+
+### Option B: Install from source (for developers)
+
+Requires Python 3.10+ and the [`pyueye`](https://pypi.org/project/pyueye/)
+package (which in turn requires the IDS SDK).
+
 ```bash
 # Install pyueye first (requires the IDS SDK runtime)
 pip install pyueye
@@ -38,6 +53,17 @@ pip install -e .
 # Optional: install with video export support (adds OpenCV)
 uv pip install -e ".[video]"
 ```
+
+### Building the executable from source
+
+If you want to build the executable yourself (Windows only):
+
+```bash
+pip install pyinstaller
+python build_exe.py
+```
+
+The output will be in `dist/ueye-timelapse/`. Zip that folder for distribution.
 
 ## Usage
 
