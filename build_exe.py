@@ -21,6 +21,22 @@ import subprocess
 import sys
 from pathlib import Path
 
+ICO_SIZES = [16, 32, 48, 64, 128, 256]
+PNG_SOURCE = Path("ueyetimelapse_icon_SQUARE_CROPPED.png")
+ICO_OUTPUT = Path("ueyetimelapse_icon.ico")
+
+
+def create_icon():
+    from PIL import Image
+    if not PNG_SOURCE.exists():
+        print(f"Warning: icon source not found ({PNG_SOURCE}), skipping ICO generation.")
+        return
+    img = Image.open(PNG_SOURCE).convert("RGBA")
+    imgs = [img.resize((s, s), Image.LANCZOS) for s in ICO_SIZES]
+    imgs[0].save(ICO_OUTPUT, format="ICO", sizes=[(s, s) for s in ICO_SIZES],
+                 append_images=imgs[1:])
+    print(f"Icon created: {ICO_OUTPUT}")
+
 
 def main():
     # Check platform
@@ -30,6 +46,8 @@ def main():
             "You are not on Windows — the resulting executable will be\n"
             "for your current platform, not Windows.\n"
         )
+
+    create_icon()
 
     # Check PyInstaller is available
     try:
