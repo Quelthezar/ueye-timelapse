@@ -23,7 +23,9 @@ a = Analysis(
     [str(src_path / "ueye_timelapse" / "__main__.py")],
     pathex=[str(src_path)],
     binaries=[],
-    datas=[],
+    datas=[
+        ("ueyetimelapse_icon.ico", "."),
+    ],
     hiddenimports=[
         # PyQt5 plugins that PyInstaller sometimes misses
         "PyQt5.sip",
