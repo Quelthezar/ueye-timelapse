@@ -40,18 +40,42 @@ No Python installation required. Video export (MP4/AVI) is included.
 Requires Python 3.10+ and the [`pyueye`](https://pypi.org/project/pyueye/)
 package (which in turn requires the IDS SDK).
 
-```bash
-# Install pyueye first (requires the IDS SDK runtime)
-pip install pyueye
+**Important:** always install into a virtual environment and make sure that
+environment is the one actually in use when you launch the app. A large
+fraction of "module not found" errors come from installing into one Python
+and launching from another. See [Troubleshooting](#troubleshooting) below
+if something goes wrong.
 
-# Then install ueye-timelapse using uv (recommended)
+With `uv` (recommended — see the [appendix](#appendix-setting-up-uv) if you
+don't have it):
+
+```bash
+# Create and activate a virtual environment in the project directory
+uv venv
+source .venv/bin/activate      # Linux/macOS
+.venv\Scripts\activate         # Windows (cmd / PowerShell)
+
+# Install pyueye first (requires the IDS SDK runtime to be installed)
+uv pip install pyueye
+
+# Install the project in editable mode
 uv pip install -e .
 
-# Or with pip
-pip install -e .
-
-# Optional: install with video export support (adds OpenCV)
+# Optional: include video export support (adds OpenCV)
 uv pip install -e ".[video]"
+```
+
+With plain `pip`:
+
+```bash
+python -m venv .venv
+source .venv/bin/activate      # Linux/macOS
+.venv\Scripts\activate         # Windows
+
+pip install pyueye
+pip install -e .
+# Optional:
+pip install -e ".[video]"
 ```
 
 ### Building the executable from source
@@ -67,13 +91,20 @@ The output will be in `dist/ueye-timelapse/`. Zip that folder for distribution.
 
 ## Usage
 
+Activate the virtual environment you installed into, then:
+
 ```bash
 # Via the installed entry point
 ueye-timelapse
 
-# Or run directly
+# Or run directly as a module (useful if the entry-point script is broken)
 python -m ueye_timelapse
 ```
+
+Both paths go through the same launcher, which checks for required
+packages up front and prints a targeted message (with the active
+interpreter path) if something is missing. See
+[Troubleshooting](#troubleshooting) if you hit an import error.
 
 ### Quick start
 
@@ -196,9 +227,104 @@ ueye-timelapse/
   src/
     ueye_timelapse/
       __init__.py
-      __main__.py           # entry point (ueye-timelapse command)
+      __main__.py           # `python -m ueye_timelapse` — delegates to launcher
+      launcher.py           # entry point with import diagnostics
       app.py                # PyQt5 main window and GUI
       camera.py             # IDS uEye camera controller (pyueye)
       capture.py            # timelapse capture worker thread
       video.py              # video export utility (OpenCV)
 ```
+
+## Troubleshooting
+
+The launcher prints a targeted error when a required package is missing,
+including the Python interpreter path it's running under. That path is
+usually the key clue: if it isn't the interpreter inside the virtual
+environment you installed into, the fix is an environment issue, not a
+package issue.
+
+### `PyQt5 is not available in this Python environment`
+
+The active Python can't import PyQt5. Most common causes:
+
+- **Wrong environment active.** Compare the `Python executable` line in
+  the error against the Python you installed PyQt5 into:
+  ```bash
+  which python        # Linux/macOS
+  where  python       # Windows
+  ```
+  If they differ, activate the correct venv (`source .venv/bin/activate`
+  on Linux/macOS, `.venv\Scripts\activate` on Windows) and try again.
+- **PyQt5 genuinely missing.** `pip install PyQt5` (or re-run
+  `pip install -e .`) into the correct environment.
+- **System Python vs. user Python.** On some Linux distros (notably Arch)
+  running `python` outside a venv may hit a system interpreter that can't
+  see packages you installed elsewhere. Always launch from an activated
+  venv.
+
+### `pyueye is not installed` notice
+
+This is a warning, not a fatal error — the GUI still launches, but camera
+features are disabled. To enable them, install the
+[IDS uEye SDK](https://en.ids-imaging.com/ids-software-suite.html), then
+`pip install pyueye` into your environment.
+
+### Video export is unavailable
+
+`opencv-python` is an optional dependency. Install it with
+`pip install -e ".[video]"` (or `pip install opencv-python`) into the
+active environment.
+
+### Something else failed to import
+
+The launcher catches any `ImportError` raised during startup and prints
+the name of the missing module plus the active interpreter. Reinstalling
+the project into that environment (`pip install -e .`) resolves most
+cases; if not, please open an issue with the full error output.
+
+## Appendix: Setting up uv
+
+[`uv`](https://docs.astral.sh/uv/) is a fast Python package and
+environment manager. It is not required — plain `pip` and `venv` work
+fine — but the workflow is shorter.
+
+### Install
+
+- **Linux / macOS:**
+  ```bash
+  curl -LsSf https://astral.sh/uv/install.sh | sh
+  ```
+- **Windows (PowerShell):**
+  ```powershell
+  powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
+  ```
+- Or via your package manager (`brew install uv`, `pacman -S uv`, etc.).
+
+See the [official uv install docs](https://docs.astral.sh/uv/getting-started/installation/)
+for other options.
+
+### Typical workflow in this project
+
+From the project root:
+
+```bash
+# Create a virtual environment (.venv/ in the project directory)
+uv venv
+
+# Activate it
+source .venv/bin/activate      # Linux/macOS
+.venv\Scripts\activate         # Windows
+
+# Install dependencies into the active venv
+uv pip install pyueye          # requires the IDS SDK runtime
+uv pip install -e ".[video]"   # editable install + optional video deps
+
+# Launch
+ueye-timelapse
+```
+
+You can also run the app without activating the venv by using
+`uv run ueye-timelapse` — uv picks up `.venv/` automatically. This can
+be convenient for one-off launches but makes the active interpreter
+less visible in error messages, so activation is preferred while
+troubleshooting.

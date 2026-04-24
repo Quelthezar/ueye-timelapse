@@ -15,7 +15,7 @@ video = [
 ]
 
 [project.scripts]
-ueye-timelapse = "ueye_timelapse.__main__:main"
+ueye-timelapse = "ueye_timelapse.launcher:main"
 
 [build-system]
 requires = ["hatchling"]
